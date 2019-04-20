@@ -1,5 +1,5 @@
-require "httparty"
 require "dotenv"
+require "httparty"
 
 Dotenv.load(".env", "~/.env")
 
@@ -7,37 +7,57 @@ class Swarm
   CLIENT_ID = ENV["SWARM_CLIENT_ID"]
   CLIENT_SECRET = ENV["SWARM_CLIENT_SECRET"]
   ACCESS_TOKEN = ENV["SWARM_ACCESS_TOKEN"]
-  HOME_COUNTRY = "GB"
+  HOME_COUNTRY_CODE = "GB"
   MAX_QUERY_LIMIT = 250
+  OUTPUT_FILE= "checkins-abroad.md"
 
   class << self
     def list_checkins_abroad
-      # total_count = api_request(limit: 1)[:checkins][:count]
-      total_count = 500
-      progression_count = 0
-      offset = 0
-      checkins_abroad = []
-      formatted_checkins = []
+      total_count = api_request(limit: 1)[:checkins][:count]
+      progression_count, offset, last_cc = 0, 0, nil
+      trips, formatted_trips = [], []
+
+      puts "Retrieving and processing #{total_count} check-ins."
 
       while progression_count < total_count
         checkins = api_request(offset: offset)[:checkins][:items]
         progression_count += checkins.count
         offset += MAX_QUERY_LIMIT
-        checkins.reject! { |checkin| checkin[:venue][:location][:cc] == HOME_COUNTRY }
-        checkins_abroad.push(*checkins)
+
+        checkins.each do |raw_checkin|
+          current_cc = raw_checkin[:venue][:location][:cc]
+          same_country = last_cc ? current_cc == last_cc : false
+          checkin = serialised(raw_checkin)
+          venue = [checkin[:venue], checkin[:city]].compact.join(", ")
+          item = [checkin[:time].strftime("%d/%m/%Y %H:%M"), venue].join(" – ")
+
+          unless current_cc == HOME_COUNTRY_CODE
+            same_country ? trips.last.last.push(item) : trips.push([checkin[:country], [item]])
+          end
+
+          last_cc = current_cc
+        rescue
+          puts "NoDataError: missing required fields for #{raw_checkin}"
+        end
+
+        print "Progress: #{progression_count}/#{total_count} "
+        puts "(#{trips.sum { |trip| trip.last.count }} abroad)"
       end
 
-      checkins_abroad.each do |raw_checkin|
-        checkin = serialised(raw_checkin)
-        venue = [checkin[:venue], checkin[:city], checkin[:country]].compact.join(", ")
-        item = [checkin[:time].strftime("%d/%m/%Y %H:%M"), venue].join(" – ")
-        formatted_checkins << item
+      trips.each do |trip|
+        formatted_trip = "#{trip.first}:\n"
+        trip.last.each { |checkin| formatted_trip << "  * #{checkin}\n" }
+        formatted_trips << formatted_trip
       end
 
-      File.open("./checkins-abroad.md", 'w') { |f| f.write(formatted_checkins.join("\n"))  }
+      File.open("./" + OUTPUT_FILE, "w") { |f| f.write(formatted_trips.join("\n\n"))  }
+
+      print "Generated a list of #{formatted_trips.count} trips abroad in: "
+      puts Dir.pwd + OUTPUT_FILE
     end
 
     # private
+
     def serialised(checkin)
       {
         time: Time.at(checkin[:createdAt]).utc + (checkin[:timeZoneOffset] * 60),
